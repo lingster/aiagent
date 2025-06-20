@@ -89,7 +89,29 @@ be returned.
 
 If we want to run directly on the local machine, this can be configured, set `USE_DOCKER=False` as your env var.
 
-## Knonwn Issues
+## Customise to your workflow and coding languages
+By default the docker container contains python (uv) and node (nvm) as pre-installed packages.
+But you have complete freedom to adjust to your workflow.
+You can also amend the docker-compose file an expose ports from docker back to host, ideal if you are building 
+apps that need network access.
+
+## Example prompts to try:
+
+```
+Using shelltools what's in the /data directory?
+```
+This should retun the contents of your mounted volume/directory. 
+
+```
+Using shelltools write a factorial script in python, then run this to calculate the factorial of 7 supplied as a command line arg
+```
+
+```
+create a hello world web page and host it using node 
+```
+
+
+## Known Issues
 Some times the llm may run a command in the shell which never returns for example `npm run dev`.
 This would block future commands from being executed. In this case just restart the docker container with:
 `docker compose up -d --force-recreate app`
