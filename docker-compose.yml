@@ -1,0 +1,17 @@
+services:
+  app:
+    image: aiagent # Uses the image name from the Dockerfile build
+    build:
+      context: .  # Build context is current directory (where Dockerfile is)
+    ports:
+      - "${MCP_PORT:-8888}:8000"  # Maps host port 8000 to container port 8000
+    environment:
+      - TMPDIR=/tmp
+    env_file:
+      - .env
+    volumes:
+      - ${DATA_PATH:-./data}:/data:rw,exec
+    tty: true  # Keeps container running with interactive terminal
+    stdin_open: true  # Enables interactive stdin
+    working_dir: /app  # Sets working directory to /app
+
