@@ -3,6 +3,8 @@
 An MCP server to give your AI Agent access to a Linux shell, in a safe docker container. 
 
 Are you a developer who has used Claude Code but have been ratching up a large API bill?
+*21-Jun-2025 UPDATE* - So I only found out that you can now use Claude Code with a Pro or MAX subscription, so the above is no longer true! 
+
 Then try this MCP server. This will give your Claude Desktop access to a linux shell
 to write and build your code, create and run unit tests and run your code from the 
 safety of being inside a docker container! 
@@ -110,6 +112,8 @@ Using shelltools write a factorial script in python, then run this to calculate 
 create a hello world web page and host it using node 
 ```
 
+## BONUS: My Tips:
+If you are using Claude Desktop as your MCP client, take advantage of the Projects feature and create a new project for each of your code project. Include documentation and other relevant attachments. Then customise your custom prompt for that project with your own personal coding conventions.
 
 ## Known Issues
 Some times the llm may run a command in the shell which never returns for example `npm run dev`.
