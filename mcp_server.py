@@ -30,7 +30,7 @@ logger.add(sys.stderr, format="{time} {level} {message}", level="INFO")
 @mcp.tool()
 async def execute_linux_shell_command(cmd: str) -> dict:
     """Execute a Linux shell command synchronously. This will only return when the shell command completed.
-    Therefore do not use this tool if you are starting a long running task, such as a web server. 
+    Therefore do not use this tool if you are starting a long running task, such as a web server.
     The linux shell also includes the following tools:
       - tree-sitter which can be used to index and search code.
     """
@@ -81,20 +81,20 @@ async def execute_background_linux_shell_command(cmd: str) -> dict:
 async def view_file(path: str, view_range: Optional[List[int]] = None) -> dict:
     """
     View the contents of a file or directory.
-    
+
     Args:
         path: The path to the file or directory to view
         view_range: Optional list of [start_line, end_line] to view only a portion of the file
-    
+
     Returns:
         A dictionary with the file content or error message
     """
     try:
-        payload = {
+        payload = json.dumps({
             "command": "view",
             "path": path,
             "view_range": view_range
-        }
+        })
         async with httpx.AsyncClient() as client:
             response = await client.post(f"{file_operations_base_url}operation/", json=payload)
             if response.status_code == 200:
@@ -123,20 +123,20 @@ async def view_file(path: str, view_range: Optional[List[int]] = None) -> dict:
 async def create_a_file(path: str, file_text: str) -> dict:
     """
     Create a new file with the specified content.
-    
+
     Args:
         path: The path where the file should be created
         file_text: The content to write to the file
-    
+
     Returns:
         A dictionary indicating success or failure
     """
     try:
-        payload = {
+        payload = json.dumps({
             "command": "create",
             "path": path,
             "file_text": file_text
-        }
+        })
         async with httpx.AsyncClient() as client:
             response = await client.post(f"{file_operations_base_url}operation/", json=payload)
             if response.status_code == 200:
@@ -158,22 +158,22 @@ async def create_a_file(path: str, file_text: str) -> dict:
 async def string_replace(path: str, old_str: str, new_str: str) -> dict:
     """
     Replace text in a file.
-    
+
     Args:
         path: The path to the file to modify
         old_str: The string to be replaced
         new_str: The string to replace with
-    
+
     Returns:
         A dictionary indicating success or failure and a message
     """
     try:
-        payload = {
+        payload = json.dumps({
             "command": "str_replace",
             "path": path,
             "old_str": old_str,
             "new_str": new_str
-        }
+        })
         async with httpx.AsyncClient() as client:
             response = await client.post(f"{file_operations_base_url}operation/", json=payload)
             if response.status_code == 200:
@@ -195,22 +195,22 @@ async def string_replace(path: str, old_str: str, new_str: str) -> dict:
 async def insert_at(path: str, insert_line: int, new_str: str) -> dict:
     """
     Insert text at a specific line in a file.
-    
+
     Args:
         path: The path to the file to modify
         insert_line: The line number where the text should be inserted
         new_str: The string to insert
-    
+
     Returns:
         A dictionary indicating success or failure and a message
     """
     try:
-        payload = {
+        payload = json.dumps({
             "command": "insert",
             "path": path,
             "insert_line": insert_line,
             "new_str": new_str
-        }
+        })
         async with httpx.AsyncClient() as client:
             response = await client.post(f"{file_operations_base_url}operation/", json=payload)
             if response.status_code == 200:
@@ -232,18 +232,18 @@ async def insert_at(path: str, insert_line: int, new_str: str) -> dict:
 async def undo_file_edit(path: str) -> dict:
     """
     Revert the last edit made to a file.
-    
+
     Args:
         path: The path to the file to revert
-    
+
     Returns:
         A dictionary indicating success or failure and a message
     """
     try:
-        payload = {
+        payload = json.dumps({
             "command": "undo_edit",
             "path": path
-        }
+        })
         async with httpx.AsyncClient() as client:
             response = await client.post(f"{file_operations_base_url}operation/", json=payload)
             if response.status_code == 200:
