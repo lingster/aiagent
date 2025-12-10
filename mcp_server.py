@@ -20,7 +20,7 @@ from remote_server_lib.core import CommandRequest
 
 # Create an MCP server
 
-PORT = os.environ.get("MCP_PORT", "8888")
+PORT = os.environ.get("MCP_PORT", "8181")
 USE_DOCKER = os.environ.get("USE_DOCKER", "True") == "True"
 execute_url = os.environ.get("mcp_sync", f"http://localhost:{PORT}/api/sync/execute/")
 async_url = os.environ.get("mcp_async", f"http://localhost:{PORT}/api/async/execute/background/")
