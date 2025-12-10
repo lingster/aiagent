@@ -1,9 +1,11 @@
 import os
 import sys
+import subprocess
 from loguru import logger
 from mcp.server.fastmcp import FastMCP
 import httpx
 import anyio
+import json
 from typing import Optional, List
 
 # Configure advanced error handling for loguru
@@ -47,8 +49,15 @@ async def execute_linux_shell_command(cmd: str) -> dict:
             else:
                 return {"error": f"failed to run linux command: {response.json().get('error')}"}
         else:
-            process = await anyio.run_process(cmd, stdout=anyio.PIPE, stderr=anyio.PIPE)
-            return {"pid": process.pid}
+            process = await anyio.run_process(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            return {
+                "command": cmd,
+                "output": process.stdout.decode() if process.stdout else "",
+                "error": process.stderr.decode() if process.stderr else "",
+                "return_code": process.returncode,
+                "pid": process.pid,
+
+            }
     except Exception as ex:
         logger.error(f"failed to execute command: {cmd=}: {str(ex)}")
         return {"error": f"failed to run linux command: {str(ex)}"}
@@ -69,8 +78,15 @@ async def execute_background_linux_shell_command(cmd: str) -> dict:
                 else:
                     return {"error": f"failed to run async linux command: {response.json().get('error')}"}
         else:
-            process = await anyio.run_process(cmd, stdout=anyio.PIPE, stderr=anyio.PIPE)
-            return {"pid": process.pid}
+            # For background tasks, we can't use anyio.run_process as it waits for completion
+            # Instead, we should start a subprocess in the background
+            import asyncio
+            proc = await asyncio.create_subprocess_shell(
+                cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            return {"pid": proc.pid}
     except Exception as ex:
         logger.error(f"failed to execute async command: {cmd=}: {str(ex)}")
         return {"error": f"failed to run async linux command: {str(ex)}"}
@@ -90,11 +106,11 @@ async def view_file(path: str, view_range: Optional[List[int]] = None) -> dict:
         A dictionary with the file content or error message
     """
     try:
-        payload = json.dumps({
+        payload = {
             "command": "view",
-            "path": path,
-            "view_range": view_range
-        })
+            "path": json.dumps(path),
+            "view_range": json.dumps(view_range)
+        }
         async with httpx.AsyncClient() as client:
             response = await client.post(f"{file_operations_base_url}operation/", json=payload)
             if response.status_code == 200:
@@ -132,11 +148,11 @@ async def create_a_file(path: str, file_text: str) -> dict:
         A dictionary indicating success or failure
     """
     try:
-        payload = json.dumps({
+        payload = {
             "command": "create",
-            "path": path,
-            "file_text": file_text
-        })
+            "path": json.dumps(path),
+            "file_text": json.dumps(file_text),
+        }
         async with httpx.AsyncClient() as client:
             response = await client.post(f"{file_operations_base_url}operation/", json=payload)
             if response.status_code == 200:
@@ -168,12 +184,12 @@ async def string_replace(path: str, old_str: str, new_str: str) -> dict:
         A dictionary indicating success or failure and a message
     """
     try:
-        payload = json.dumps({
+        payload = {
             "command": "str_replace",
-            "path": path,
-            "old_str": old_str,
-            "new_str": new_str
-        })
+            "path": json.dumps(path),
+            "old_str": json.dumps(old_str),
+            "new_str": json.dumps(new_str)
+        }
         async with httpx.AsyncClient() as client:
             response = await client.post(f"{file_operations_base_url}operation/", json=payload)
             if response.status_code == 200:
@@ -205,12 +221,12 @@ async def insert_at(path: str, insert_line: int, new_str: str) -> dict:
         A dictionary indicating success or failure and a message
     """
     try:
-        payload = json.dumps({
+        payload = {
             "command": "insert",
-            "path": path,
-            "insert_line": insert_line,
-            "new_str": new_str
-        })
+            "path": json.dumps(path),
+            "insert_line": json.dumps(insert_line),
+            "new_str": json.dumps(new_str)
+        }
         async with httpx.AsyncClient() as client:
             response = await client.post(f"{file_operations_base_url}operation/", json=payload)
             if response.status_code == 200:
@@ -240,10 +256,10 @@ async def undo_file_edit(path: str) -> dict:
         A dictionary indicating success or failure and a message
     """
     try:
-        payload = json.dumps({
+        payload = {
             "command": "undo_edit",
-            "path": path
-        })
+            "path": json.dumps(path)
+        }
         async with httpx.AsyncClient() as client:
             response = await client.post(f"{file_operations_base_url}operation/", json=payload)
             if response.status_code == 200:
