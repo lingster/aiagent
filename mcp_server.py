@@ -108,7 +108,7 @@ async def view_file(path: str, view_range: Optional[List[int]] = None) -> dict:
     try:
         payload = {
             "command": "view",
-            "path": json.dumps(path),
+            "path": path,
             "view_range": json.dumps(view_range)
         }
         async with httpx.AsyncClient() as client:
@@ -150,7 +150,7 @@ async def create_a_file(path: str, file_text: str) -> dict:
     try:
         payload = {
             "command": "create",
-            "path": json.dumps(path),
+            "path": path,
             "file_text": json.dumps(file_text),
         }
         async with httpx.AsyncClient() as client:
@@ -186,7 +186,7 @@ async def string_replace(path: str, old_str: str, new_str: str) -> dict:
     try:
         payload = {
             "command": "str_replace",
-            "path": json.dumps(path),
+            "path": path,
             "old_str": json.dumps(old_str),
             "new_str": json.dumps(new_str)
         }
@@ -223,7 +223,7 @@ async def insert_at(path: str, insert_line: int, new_str: str) -> dict:
     try:
         payload = {
             "command": "insert",
-            "path": json.dumps(path),
+            "path": path,
             "insert_line": json.dumps(insert_line),
             "new_str": json.dumps(new_str)
         }
@@ -258,7 +258,7 @@ async def undo_file_edit(path: str) -> dict:
     try:
         payload = {
             "command": "undo_edit",
-            "path": json.dumps(path)
+            "path": path
         }
         async with httpx.AsyncClient() as client:
             response = await client.post(f"{file_operations_base_url}operation/", json=payload)
