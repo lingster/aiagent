@@ -51,6 +51,9 @@ class CommandExecutor:
         self.async_url = async_url or f"http://localhost:{self.mcp_port}/api/async/execute/background/"
         self.file_operations_base_url = file_operations_base_url or f"http://localhost:{self.mcp_port}/api/files/"
 
+        # File edit history for undo functionality (only used in local mode)
+        self.file_history: Dict[str, str] = {}
+
     async def execute_linux_shell_command(self, cmd: str) -> dict:
         """
         Execute a Linux shell command synchronously.
@@ -142,33 +145,65 @@ class CommandExecutor:
             Dict with success, content/error, and message
         """
         try:
-            payload = {
-                "command": "view",
-                "path": path,
-                "view_range": json.dumps(view_range)
-            }
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{self.file_operations_base_url}operation/",
-                    json=payload
-                )
-                if response.status_code == 200:
-                    result = response.json()
-                    if result.get("success", False):
-                        return {
-                            "success": True,
-                            "content": result.get("content", ""),
-                            "message": result.get("message", "")
-                        }
+            if self.use_docker:
+                payload = {
+                    "command": "view",
+                    "path": path,
+                    "view_range": json.dumps(view_range)
+                }
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(
+                        f"{self.file_operations_base_url}operation/",
+                        json=payload
+                    )
+                    if response.status_code == 200:
+                        result = response.json()
+                        if result.get("success", False):
+                            return {
+                                "success": True,
+                                "content": result.get("content", ""),
+                                "message": result.get("message", "")
+                            }
+                        else:
+                            return {
+                                "success": False,
+                                "error": result.get("message", "Unknown error")
+                            }
                     else:
                         return {
                             "success": False,
-                            "error": result.get("message", "Unknown error")
+                            "error": f"Request failed with status code {response.status_code}"
                         }
+            else:
+                # Local execution
+                if os.path.isdir(path):
+                    # List directory contents
+                    items = os.listdir(path)
+                    content = "\n".join(sorted(items))
+                    return {
+                        "success": True,
+                        "content": content,
+                        "message": f"Directory listing for {path}"
+                    }
+                elif os.path.isfile(path):
+                    # Read file contents
+                    with open(path, 'r', encoding='utf-8') as f:
+                        lines = f.readlines()
+
+                    if view_range and len(view_range) == 2:
+                        start_line, end_line = view_range
+                        lines = lines[start_line:end_line]
+
+                    content = "".join(lines)
+                    return {
+                        "success": True,
+                        "content": content,
+                        "message": f"File content for {path}"
+                    }
                 else:
                     return {
                         "success": False,
-                        "error": f"Request failed with status code {response.status_code}"
+                        "error": f"Path does not exist: {path}"
                     }
         except Exception as ex:
             logger.error(f"Failed to view file {path}: {str(ex)}")
@@ -186,27 +221,48 @@ class CommandExecutor:
             Dict with success and message/error
         """
         try:
-            payload = {
-                "command": "create",
-                "path": path,
-                "file_text": json.dumps(file_text),
-            }
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{self.file_operations_base_url}operation/",
-                    json=payload
-                )
-                if response.status_code == 200:
-                    result = response.json()
-                    return {
-                        "success": result.get("success", False),
-                        "message": result.get("message", "")
-                    }
-                else:
-                    return {
-                        "success": False,
-                        "error": f"Request failed with status code {response.status_code}"
-                    }
+            if self.use_docker:
+                payload = {
+                    "command": "create",
+                    "path": path,
+                    "file_text": json.dumps(file_text),
+                }
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(
+                        f"{self.file_operations_base_url}operation/",
+                        json=payload
+                    )
+                    if response.status_code == 200:
+                        result = response.json()
+                        return {
+                            "success": result.get("success", False),
+                            "message": result.get("message", "")
+                        }
+                    else:
+                        return {
+                            "success": False,
+                            "error": f"Request failed with status code {response.status_code}"
+                        }
+            else:
+                # Local execution
+                # Store backup if file exists
+                if os.path.exists(path):
+                    with open(path, 'r', encoding='utf-8') as f:
+                        self.file_history[path] = f.read()
+
+                # Create directory if it doesn't exist
+                dir_path = os.path.dirname(path)
+                if dir_path and not os.path.exists(dir_path):
+                    os.makedirs(dir_path, exist_ok=True)
+
+                # Write the file
+                with open(path, 'w', encoding='utf-8') as f:
+                    f.write(file_text)
+
+                return {
+                    "success": True,
+                    "message": f"File created successfully: {path}"
+                }
         except Exception as ex:
             logger.error(f"Failed to create file {path}: {str(ex)}")
             return {"success": False, "error": str(ex)}
@@ -224,28 +280,61 @@ class CommandExecutor:
             Dict with success and message/error
         """
         try:
-            payload = {
-                "command": "str_replace",
-                "path": path,
-                "old_str": json.dumps(old_str),
-                "new_str": json.dumps(new_str)
-            }
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{self.file_operations_base_url}operation/",
-                    json=payload
-                )
-                if response.status_code == 200:
-                    result = response.json()
-                    return {
-                        "success": result.get("success", False),
-                        "message": result.get("message", "")
-                    }
-                else:
+            if self.use_docker:
+                payload = {
+                    "command": "str_replace",
+                    "path": path,
+                    "old_str": json.dumps(old_str),
+                    "new_str": json.dumps(new_str)
+                }
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(
+                        f"{self.file_operations_base_url}operation/",
+                        json=payload
+                    )
+                    if response.status_code == 200:
+                        result = response.json()
+                        return {
+                            "success": result.get("success", False),
+                            "message": result.get("message", "")
+                        }
+                    else:
+                        return {
+                            "success": False,
+                            "error": f"Request failed with status code {response.status_code}"
+                        }
+            else:
+                # Local execution
+                if not os.path.exists(path):
                     return {
                         "success": False,
-                        "error": f"Request failed with status code {response.status_code}"
+                        "error": f"File not found: {path}"
                     }
+
+                # Read current content
+                with open(path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+
+                # Store backup
+                self.file_history[path] = content
+
+                # Replace string
+                if old_str not in content:
+                    return {
+                        "success": False,
+                        "error": f"String not found in file: {old_str}"
+                    }
+
+                new_content = content.replace(old_str, new_str)
+
+                # Write back
+                with open(path, 'w', encoding='utf-8') as f:
+                    f.write(new_content)
+
+                return {
+                    "success": True,
+                    "message": f"String replaced successfully in {path}"
+                }
         except Exception as ex:
             logger.error(f"Failed to replace string in file {path}: {str(ex)}")
             return {"success": False, "error": str(ex)}
@@ -263,28 +352,65 @@ class CommandExecutor:
             Dict with success and message/error
         """
         try:
-            payload = {
-                "command": "insert",
-                "path": path,
-                "insert_line": json.dumps(insert_line),
-                "new_str": json.dumps(new_str)
-            }
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{self.file_operations_base_url}operation/",
-                    json=payload
-                )
-                if response.status_code == 200:
-                    result = response.json()
-                    return {
-                        "success": result.get("success", False),
-                        "message": result.get("message", "")
-                    }
-                else:
+            if self.use_docker:
+                payload = {
+                    "command": "insert",
+                    "path": path,
+                    "insert_line": json.dumps(insert_line),
+                    "new_str": json.dumps(new_str)
+                }
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(
+                        f"{self.file_operations_base_url}operation/",
+                        json=payload
+                    )
+                    if response.status_code == 200:
+                        result = response.json()
+                        return {
+                            "success": result.get("success", False),
+                            "message": result.get("message", "")
+                        }
+                    else:
+                        return {
+                            "success": False,
+                            "error": f"Request failed with status code {response.status_code}"
+                        }
+            else:
+                # Local execution
+                if not os.path.exists(path):
                     return {
                         "success": False,
-                        "error": f"Request failed with status code {response.status_code}"
+                        "error": f"File not found: {path}"
                     }
+
+                # Read current content
+                with open(path, 'r', encoding='utf-8') as f:
+                    lines = f.readlines()
+
+                # Store backup
+                self.file_history[path] = "".join(lines)
+
+                # Insert new string at specified line
+                if insert_line < 0 or insert_line > len(lines):
+                    return {
+                        "success": False,
+                        "error": f"Invalid line number: {insert_line}. File has {len(lines)} lines."
+                    }
+
+                # Add newline if not present
+                if new_str and not new_str.endswith('\n'):
+                    new_str += '\n'
+
+                lines.insert(insert_line, new_str)
+
+                # Write back
+                with open(path, 'w', encoding='utf-8') as f:
+                    f.writelines(lines)
+
+                return {
+                    "success": True,
+                    "message": f"Text inserted at line {insert_line} in {path}"
+                }
         except Exception as ex:
             logger.error(f"Failed to insert at line in file {path}: {str(ex)}")
             return {"success": False, "error": str(ex)}
@@ -300,26 +426,48 @@ class CommandExecutor:
             Dict with success and message/error
         """
         try:
-            payload = {
-                "command": "undo_edit",
-                "path": path
-            }
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{self.file_operations_base_url}operation/",
-                    json=payload
-                )
-                if response.status_code == 200:
-                    result = response.json()
-                    return {
-                        "success": result.get("success", False),
-                        "message": result.get("message", "")
-                    }
-                else:
+            if self.use_docker:
+                payload = {
+                    "command": "undo_edit",
+                    "path": path
+                }
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(
+                        f"{self.file_operations_base_url}operation/",
+                        json=payload
+                    )
+                    if response.status_code == 200:
+                        result = response.json()
+                        return {
+                            "success": result.get("success", False),
+                            "message": result.get("message", "")
+                        }
+                    else:
+                        return {
+                            "success": False,
+                            "error": f"Request failed with status code {response.status_code}"
+                        }
+            else:
+                # Local execution
+                if path not in self.file_history:
                     return {
                         "success": False,
-                        "error": f"Request failed with status code {response.status_code}"
+                        "error": f"No edit history found for {path}"
                     }
+
+                # Restore from backup
+                backup_content = self.file_history[path]
+
+                with open(path, 'w', encoding='utf-8') as f:
+                    f.write(backup_content)
+
+                # Remove from history after restore
+                del self.file_history[path]
+
+                return {
+                    "success": True,
+                    "message": f"Edit undone successfully for {path}"
+                }
         except Exception as ex:
             logger.error(f"Failed to undo edit for file {path}: {str(ex)}")
             return {"success": False, "error": str(ex)}
