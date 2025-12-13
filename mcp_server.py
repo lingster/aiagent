@@ -17,6 +17,7 @@ mcp = FastMCP("Automate", dependences=["loguru", "httpx"])
 
 from loguru import logger
 from remote_server_lib.core import CommandRequest
+from skills_manager import SkillsManager
 
 # Create an MCP server
 
@@ -28,6 +29,11 @@ file_operations_base_url = os.environ.get("str_replace", f"http://localhost:{POR
 
 logger.remove()
 logger.add(sys.stderr, format="{time} {level} {message}", level="INFO")
+
+# Initialize skills manager
+SKILLS_DIR = os.environ.get("SKILLS_DIR", "./skills")
+skills_manager = SkillsManager(SKILLS_DIR)
+logger.info(f"Initialized skills manager with {len(skills_manager.skills_cache)} skills")
 
 @mcp.tool()
 async def execute_linux_shell_command(cmd: str) -> dict:
@@ -275,6 +281,95 @@ async def undo_file_edit(path: str) -> dict:
                 }
     except Exception as ex:
         logger.error(f"Failed to undo edit for file {path}: {str(ex)}")
+        return {"success": False, "error": str(ex)}
+
+# Skills Management Tools
+
+@mcp.tool()
+async def list_skills() -> dict:
+    """
+    List all available skills with their names and summaries.
+
+    Returns:
+        A dictionary containing a list of skills with name and summary
+    """
+    try:
+        skills = skills_manager.list_skills()
+        return {
+            "success": True,
+            "skills": skills,
+            "count": len(skills)
+        }
+    except Exception as ex:
+        logger.error(f"Failed to list skills: {str(ex)}")
+        return {"success": False, "error": str(ex)}
+
+@mcp.tool()
+async def get_skill(name: str) -> dict:
+    """
+    Get the full description and details of a specific skill by name.
+
+    Args:
+        name: The name of the skill to retrieve
+
+    Returns:
+        A dictionary with the skill's full details or error if not found
+    """
+    try:
+        skill = skills_manager.get_skill(name)
+        if skill:
+            return {
+                "success": True,
+                "skill": skill
+            }
+        else:
+            return {
+                "success": False,
+                "error": f"Skill '{name}' not found",
+                "available_skills": list(skills_manager.skills_cache.keys())
+            }
+    except Exception as ex:
+        logger.error(f"Failed to get skill {name}: {str(ex)}")
+        return {"success": False, "error": str(ex)}
+
+@mcp.tool()
+async def use_skill(skill_name: str, command: str) -> dict:
+    """
+    Execute a command in the context of a skill.
+
+    This copies the skill files to a temporary directory and executes the command there,
+    preventing any modifications to the original skill files.
+
+    Args:
+        skill_name: The name of the skill to use
+        command: The command to execute (e.g., "python script.py arg1 arg2")
+
+    Returns:
+        A dictionary with the command execution results including output, error, and return code
+    """
+    try:
+        result = await skills_manager.use_skill(skill_name, command, execute_url)
+        return result
+    except Exception as ex:
+        logger.error(f"Failed to use skill {skill_name}: {str(ex)}")
+        return {"success": False, "error": str(ex)}
+
+@mcp.tool()
+async def refresh_skills_cache() -> dict:
+    """
+    Refresh the skills cache by reloading all skills from disk.
+
+    This is useful when new skills are added or existing skills are modified
+    without restarting the MCP server.
+
+    Returns:
+        A dictionary indicating success and the number of skills loaded
+    """
+    try:
+        result = skills_manager.refresh_skills()
+        return result
+    except Exception as ex:
+        logger.error(f"Failed to refresh skills cache: {str(ex)}")
         return {"success": False, "error": str(ex)}
 
 if __name__ == "__main__":

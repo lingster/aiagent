@@ -124,3 +124,38 @@ This would block future commands from being executed. In this case just restart 
 PRs and suggestions welcome.
 
 Happy coding!
+
+
+## Skills System
+
+This MCP server includes a Skills management system for organizing reusable AI agent workflows.
+
+### Features
+
+- **Auto-discovery**: Skills are automatically loaded from the `SKILLS_DIR` directory (default: `./skills`)
+- **Metadata support**: Skills can use YAML frontmatter for structured metadata
+- **Safe execution**: Commands run in isolated temporary directories
+- **Hot reload**: Refresh skills without restarting the server
+
+### MCP Tools
+
+- `list_skills()`: List all available skills with summaries
+- `get_skill(name)`: Get full documentation for a specific skill
+- `use_skill(skill_name, command)`: Execute a command in a skill's context
+- `refresh_skills_cache()`: Reload skills from disk
+
+### Example Usage
+
+```
+List available skills
+use_skill("spreadsheets", "python examples/create_basic_spreadsheet.py")
+```
+
+See [SKILLS.md](SKILLS.md) for detailed documentation.
+
+## additional mcp notes
+mcp has an llms.txt located here:
+https://modelcontextprotocol.io/llms-full.txt
+you can include this as part of your LLM prompt and the LLM will know how MCP works, ideal for creating or adding new MCP
+functionality
+

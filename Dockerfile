@@ -98,7 +98,7 @@ RUN git lfs install
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Copy application files
-COPY --chown=$USER_UID:$USER_GID pyproject.toml remote_server.py remote_server_lib /app/
+COPY --chown=$USER_UID:$USER_GID pyproject.toml remote_server.py config.py /app/
 COPY --chown=$USER_UID:$USER_GID remote_server_lib /app/remote_server_lib/
 
 # Set working directory
