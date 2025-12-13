@@ -28,6 +28,7 @@ from loguru import logger
 import httpx
 
 from remote_server_lib.command_executor import CommandExecutor
+from remote_server_lib.process_registry import get_process_registry
 
 # Configure logging
 #logger.remove()
@@ -39,12 +40,16 @@ MCP_REMOTE_PORT = int(os.environ.get("MCP_REMOTE_PORT", "8888"))
 MCP_REMOTE_HOST = str(os.environ.get("MCP_REMOTE_HOST", "127.0.0.1"))
 MCP_PORT = os.environ.get("MCP_PORT", "8181")
 USE_DOCKER = os.environ.get("USE_DOCKER", "True") == "True"
+TERMINATION_TIMEOUT = int(os.environ.get("TERMINATION_TIMEOUT", "30"))
 
 # Initialize the command executor
 executor = CommandExecutor(
     use_docker=USE_DOCKER,
     mcp_port=MCP_PORT
 )
+
+# Initialize the process registry
+process_registry = get_process_registry(termination_timeout=TERMINATION_TIMEOUT)
 
 # Backend URL for logging
 BACKEND_BASE_URL = f"http://localhost:{MCP_PORT}"
@@ -368,12 +373,130 @@ async def execute_mcp_tool(tool_name: str, arguments: Dict[str, Any]) -> Dict[st
         logger.info(f"Tool {tool_name} completed successfully")
         return result_payload
 
+    elif tool_name == "terminate_process":
+        pid = arguments.get("pid", 0)
+
+        logger.info(f"Terminating process {pid}")
+
+        # Terminate the process gracefully
+        if USE_DOCKER:
+            # Call backend API
+            try:
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(
+                        f"http://localhost:{MCP_PORT}/api/async/process/terminate_by_pid/",
+                        params={"pid": pid}
+                    )
+                    if response.status_code == 200:
+                        backend_result = response.json()
+                        result = {
+                            "success": True,
+                            "request_id": backend_result.get("request_id"),
+                            "signal": backend_result.get("signal"),
+                            "reason": backend_result.get("message")
+                        }
+                    else:
+                        result = {"success": False, "error": response.json().get("detail", "Unknown error")}
+            except Exception as e:
+                result = {"success": False, "error": str(e)}
+        else:
+            # Use local process registry
+            result = await process_registry.terminate_gracefully(
+                pid=pid,
+                reason="Manual termination via terminate_process tool"
+            )
+
+        # Format as MCP tool result
+        is_error = not result.get("success", False)
+        if is_error:
+            message = result.get("error", "Failed to terminate process")
+        else:
+            message = f"Process {pid} terminated successfully\n"
+            message += f"Request ID: {result.get('request_id')}\n"
+            message += f"Signal: {result.get('signal')}\n"
+            message += f"Reason: {result.get('reason', 'Manual termination')}"
+
+        result_payload = {
+            "content": [
+                {
+                    "type": "text",
+                    "text": message
+                }
+            ],
+            "isError": is_error
+        }
+        logger.info(f"Tool {tool_name} completed")
+        return result_payload
+
+    elif tool_name == "list_processes":
+        logger.info("Listing all background processes")
+
+        # Get all processes from registry
+        if USE_DOCKER:
+            # Call backend API
+            try:
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(
+                        f"http://localhost:{MCP_PORT}/api/async/processes/list/"
+                    )
+                    if response.status_code == 200:
+                        backend_result = response.json()
+                        processes_data = backend_result.get("processes", [])
+                        # Convert to ProcessInfo-like objects for formatting
+                        from datetime import datetime
+                        from types import SimpleNamespace
+                        processes = [
+                            SimpleNamespace(
+                                pid=p["pid"],
+                                request_id=p["request_id"],
+                                command=p["command"],
+                                status=p["status"],
+                                started_at=datetime.fromisoformat(p["started_at"]),
+                                exit_code=p["exit_code"]
+                            )
+                            for p in processes_data
+                        ]
+                    else:
+                        processes = []
+            except Exception as e:
+                logger.error(f"Failed to list processes from backend: {str(e)}")
+                processes = []
+        else:
+            # Use local process registry
+            processes = await process_registry.list_all()
+
+        if not processes:
+            message = "No background processes running"
+        else:
+            message = f"Background Processes ({len(processes)}):\n\n"
+            for proc_info in processes:
+                message += f"PID: {proc_info.pid}\n"
+                message += f"  Request ID: {proc_info.request_id}\n"
+                message += f"  Command: {proc_info.command}\n"
+                message += f"  Status: {proc_info.status}\n"
+                message += f"  Started: {proc_info.started_at.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                if proc_info.exit_code is not None:
+                    message += f"  Exit Code: {proc_info.exit_code}\n"
+                message += "\n"
+
+        result_payload = {
+            "content": [
+                {
+                    "type": "text",
+                    "text": message
+                }
+            ],
+            "isError": False
+        }
+        logger.info(f"Tool {tool_name} completed successfully")
+        return result_payload
+
     else:
         logger.error(f"Unknown tool requested: {tool_name}")
         raise ValueError(f"Unknown tool: {tool_name}")
 
 
-async def stream_command_output(cmd: str, request_id: int | str) -> AsyncIterator[str]:
+async def stream_command_output(cmd: str, request_id: int) -> AsyncIterator[str]:
     """
     Stream command output as SSE events
     Yields stdout/stderr as they happen, then final result
@@ -445,12 +568,14 @@ async def stream_command_output(cmd: str, request_id: int | str) -> AsyncIterato
         yield f"event: message\ndata: {json.dumps(error_response)}\n\n"
 
 
-async def stream_background_command(cmd: str, request_id: int | str) -> AsyncIterator[str]:
+async def stream_background_command(cmd: str, request_id: int) -> AsyncIterator[str]:
     """
     Stream background command output as SSE events with MCP tool response format.
     Yields stdout/stderr as they happen, then final MCP-formatted tool result.
+    Supports cancellation via process registry.
     """
     logger.info(f"Starting streaming background execution of command: {cmd}")
+    proc = None
     try:
         # Start the process
         proc = await asyncio.create_subprocess_shell(
@@ -460,12 +585,20 @@ async def stream_background_command(cmd: str, request_id: int | str) -> AsyncIte
         )
         logger.info(f"Background process started with PID: {proc.pid}")
 
+        # Register process in registry
+        await process_registry.register(
+            request_id=request_id,
+            pid=proc.pid,
+            command=cmd
+        )
+
         # Send initial notification with PID
-        initial_data = {"pid": proc.pid, "status": "started"}
+        initial_data = {"pid": proc.pid, "status": "started", "request_id": request_id}
         yield f"event: process_started\ndata: {json.dumps(initial_data)}\n\n"
 
         output_lines = []
         error_lines = []
+        was_cancelled = False
 
         # Stream stdout
         if proc.stdout:
@@ -487,6 +620,21 @@ async def stream_background_command(cmd: str, request_id: int | str) -> AsyncIte
         await proc.wait()
         logger.info(f"Background process {proc.pid} completed with return code: {proc.returncode}")
 
+        # Check if process was cancelled (exit code -15 is SIGTERM, -9 is SIGKILL)
+        if proc.returncode in (-15, -9):
+            was_cancelled = True
+            logger.info(f"Process {proc.pid} was terminated by signal")
+
+        # Update registry status
+        await process_registry.update_status(
+            pid=proc.pid,
+            status="completed" if not was_cancelled else "terminated",
+            exit_code=proc.returncode
+        )
+
+        # Unregister from registry
+        await process_registry.unregister(pid=proc.pid)
+
         # Format as MCP tool result with content array
         output_text = "".join(output_lines)
         error_text = "".join(error_lines)
@@ -496,6 +644,9 @@ async def stream_background_command(cmd: str, request_id: int | str) -> AsyncIte
         if error_text:
             result_text = f"{output_text}\nSTDERR:\n{error_text}" if output_text else error_text
 
+        if was_cancelled:
+            result_text = f"[Process was terminated]\n{result_text}" if result_text else "[Process was terminated]"
+
         # MCP tool response format
         tool_result = {
             "content": [
@@ -504,7 +655,7 @@ async def stream_background_command(cmd: str, request_id: int | str) -> AsyncIte
                     "text": result_text if result_text else f"Command completed with return code {proc.returncode}\nPID: {proc.pid}"
                 }
             ],
-            "isError": proc.returncode != 0 or bool(error_text)
+            "isError": (proc.returncode != 0 and not was_cancelled) or bool(error_text)
         }
 
         # Send final result as JSON-RPC response
@@ -519,6 +670,11 @@ async def stream_background_command(cmd: str, request_id: int | str) -> AsyncIte
 
     except Exception as e:
         logger.error(f"Error in stream_background_command: {str(e)}")
+
+        # Clean up registry if process was started
+        if proc:
+            await process_registry.unregister(pid=proc.pid)
+
         # Send error as MCP tool error response
         tool_error_result = {
             "content": [
@@ -648,6 +804,26 @@ async def handle_mcp_request(request: JSONRPCRequest, session: Dict[str, Any]) -
                     },
                     "required": ["path"]
                 }
+            },
+            {
+                "name": "terminate_process",
+                "description": "Terminate a background process by PID (only processes started by this server)",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "pid": {"type": "integer", "description": "Process ID to terminate"}
+                    },
+                    "required": ["pid"]
+                }
+            },
+            {
+                "name": "list_processes",
+                "description": "List all running background processes started by this server",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
             }
         ]
         return {"jsonrpc": "2.0", "id": request.id, "result": {"tools": tools}}
@@ -706,6 +882,29 @@ async def mcp_endpoint(
     try:
         body = await request.json()
         logger.info(f"Received MCP request body: {body}")
+
+        # Handle notifications/cancelled separately (notifications don't have id field)
+        if body.get("method") == "notifications/cancelled":
+            # Handle cancellation notification
+            request_id_to_cancel = body.get("params", {}).get("requestId")
+            reason = body.get("params", {}).get("reason", "Client requested cancellation")
+
+            if request_id_to_cancel:
+                logger.info(f"Received cancellation for request {request_id_to_cancel}: {reason}")
+                # Terminate the process gracefully
+                # Ensure request_id is int for security and type consistency
+                result = await process_registry.terminate_gracefully(
+                    request_id=int(request_id_to_cancel),
+                    reason=reason
+                )
+                if result.get("success"):
+                    logger.info(f"Successfully cancelled request {request_id_to_cancel}, terminated PID {result.get('pid')}")
+                else:
+                    logger.warning(f"Failed to cancel request {request_id_to_cancel}: {result.get('error')}")
+
+            # Notifications don't get a response per MCP spec
+            return Response(status_code=204)
+
         jsonrpc_request = JSONRPCRequest(**body)
     except Exception as e:
         logger.error(f"Failed to parse JSON-RPC request: {str(e)}")
@@ -756,7 +955,7 @@ async def mcp_endpoint(
                 headers["Mcp-Session-Id"] = session_id
 
             return StreamingResponse(
-                stream_background_command(cmd, jsonrpc_request.id),
+                stream_background_command(cmd, int(jsonrpc_request.id)),
                 media_type="text/event-stream",
                 headers=headers
             )
