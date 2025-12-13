@@ -445,6 +445,98 @@ async def stream_command_output(cmd: str, request_id: int | str) -> AsyncIterato
         yield f"event: message\ndata: {json.dumps(error_response)}\n\n"
 
 
+async def stream_background_command(cmd: str, request_id: int | str) -> AsyncIterator[str]:
+    """
+    Stream background command output as SSE events with MCP tool response format.
+    Yields stdout/stderr as they happen, then final MCP-formatted tool result.
+    """
+    logger.info(f"Starting streaming background execution of command: {cmd}")
+    try:
+        # Start the process
+        proc = await asyncio.create_subprocess_shell(
+            cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        logger.info(f"Background process started with PID: {proc.pid}")
+
+        # Send initial notification with PID
+        initial_data = {"pid": proc.pid, "status": "started"}
+        yield f"event: process_started\ndata: {json.dumps(initial_data)}\n\n"
+
+        output_lines = []
+        error_lines = []
+
+        # Stream stdout
+        if proc.stdout:
+            async for line in proc.stdout:
+                decoded_line = line.decode('utf-8')
+                output_lines.append(decoded_line)
+                event_data = {"content": decoded_line.rstrip()}
+                yield f"event: stdout\ndata: {json.dumps(event_data)}\n\n"
+
+        # Stream stderr
+        if proc.stderr:
+            async for line in proc.stderr:
+                decoded_line = line.decode('utf-8')
+                error_lines.append(decoded_line)
+                event_data = {"content": decoded_line.rstrip()}
+                yield f"event: stderr\ndata: {json.dumps(event_data)}\n\n"
+
+        # Wait for process to complete
+        await proc.wait()
+        logger.info(f"Background process {proc.pid} completed with return code: {proc.returncode}")
+
+        # Format as MCP tool result with content array
+        output_text = "".join(output_lines)
+        error_text = "".join(error_lines)
+
+        # Combine output and error if both exist
+        result_text = output_text
+        if error_text:
+            result_text = f"{output_text}\nSTDERR:\n{error_text}" if output_text else error_text
+
+        # MCP tool response format
+        tool_result = {
+            "content": [
+                {
+                    "type": "text",
+                    "text": result_text if result_text else f"Command completed with return code {proc.returncode}\nPID: {proc.pid}"
+                }
+            ],
+            "isError": proc.returncode != 0 or bool(error_text)
+        }
+
+        # Send final result as JSON-RPC response
+        jsonrpc_response = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": tool_result
+        }
+
+        logger.info(f"Sending final MCP tool result via SSE")
+        yield f"event: message\ndata: {json.dumps(jsonrpc_response)}\n\n"
+
+    except Exception as e:
+        logger.error(f"Error in stream_background_command: {str(e)}")
+        # Send error as MCP tool error response
+        tool_error_result = {
+            "content": [
+                {
+                    "type": "text",
+                    "text": f"Error executing command: {str(e)}"
+                }
+            ],
+            "isError": True
+        }
+        error_response = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": tool_error_result
+        }
+        yield f"event: message\ndata: {json.dumps(error_response)}\n\n"
+
+
 async def handle_mcp_request(request: JSONRPCRequest, session: Dict[str, Any]) -> Dict[str, Any]:
     """Handle MCP JSON-RPC request and return response"""
 
@@ -652,24 +744,41 @@ async def mcp_endpoint(
         arguments = jsonrpc_request.params.get("arguments", {})
         logger.info(f"Processing tool call request: {tool_name} in session {session_id}")
 
-        # Execute tool and return result (no streaming for now)
-        try:
-            result = await execute_mcp_tool(tool_name, arguments)
-            response_data = {
-                "jsonrpc": "2.0",
-                "id": jsonrpc_request.id,
-                "result": result
-            }
-        except Exception as e:
-            logger.error(f"Tool {tool_name} failed with error: {str(e)}")
-            response_data = {
-                "jsonrpc": "2.0",
-                "id": jsonrpc_request.id,
-                "error": {
-                    "code": -32000,
-                    "message": str(e)
+        # Check if this tool requires SSE streaming
+        if tool_name == "execute_background_linux_shell_command" and not USE_DOCKER:
+            # Use SSE streaming for background commands (local mode only)
+            cmd = arguments.get("cmd", "")
+            logger.info(f"Starting SSE stream for background command: {cmd}")
+
+            # Return streaming response
+            headers = {}
+            if is_initialize:
+                headers["Mcp-Session-Id"] = session_id
+
+            return StreamingResponse(
+                stream_background_command(cmd, jsonrpc_request.id),
+                media_type="text/event-stream",
+                headers=headers
+            )
+        else:
+            # Execute tool and return result (no streaming)
+            try:
+                result = await execute_mcp_tool(tool_name, arguments)
+                response_data = {
+                    "jsonrpc": "2.0",
+                    "id": jsonrpc_request.id,
+                    "result": result
                 }
-            }
+            except Exception as e:
+                logger.error(f"Tool {tool_name} failed with error: {str(e)}")
+                response_data = {
+                    "jsonrpc": "2.0",
+                    "id": jsonrpc_request.id,
+                    "error": {
+                        "code": -32000,
+                        "message": str(e)
+                    }
+                }
 
     # Return JSON response
     headers = {}
