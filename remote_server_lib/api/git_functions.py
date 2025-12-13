@@ -6,7 +6,7 @@ from config import get_working_dir
 from remote_server_lib.api.models import SourceCodeRequest
 from remote_server_lib.core import execute_command_helper, CommandRequest, CommandResponse
 from remote_server_lib.sourcecode import display_file_contents
-from remote_server_lib.logging import log_execution_time
+from remote_server_lib.execution_timing import log_execution_time
 
 from loguru import logger
 

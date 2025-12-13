@@ -1,11 +1,14 @@
 import uuid
 import asyncio
+import os
 from fastapi import APIRouter
 from fastapi import HTTPException
 from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime, timedelta
 from loguru import logger
+
+from remote_server_lib.process_registry import get_process_registry
 
 
 router = APIRouter(prefix="/api/async", tags=["async"])
@@ -15,6 +18,12 @@ router.get(path="/api/async")
 background_processes: dict[str, dict] = {}
 PROCESS_RETENTION = 24  # hours
 CLEANUP_INTERVAL = 3600  # 1 hour
+
+# Get termination timeout from environment
+TERMINATION_TIMEOUT = int(os.environ.get("TERMINATION_TIMEOUT", "30"))
+
+# Initialize process registry for backend
+backend_process_registry = get_process_registry(termination_timeout=TERMINATION_TIMEOUT)
 
 
 class AsyncCommandRequest(BaseModel):
@@ -57,19 +66,36 @@ async def cleanup_old_processes() -> None:
 async def run_command(process_id: str, command: str | list[str], timeout: Optional[int] = None) -> None:
     try:
         logger.info(f"starting: {command=}")
+        cmd_str = command if isinstance(command, str) else " ".join(command)
         process = await asyncio.create_subprocess_shell(
-            command if isinstance(command, str) else " ".join(command),
+            cmd_str,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
 
         background_processes[process_id]["process"] = process
+        background_processes[process_id]["pid"] = process.pid
+
+        # Register in process registry
+        await backend_process_registry.register(
+            request_id=process_id,
+            pid=process.pid,
+            command=cmd_str
+        )
 
         try:
             stdout, stderr = await asyncio.wait_for(
                 process.communicate(),
                 timeout=timeout
             )
+
+            # Update registry
+            await backend_process_registry.update_status(
+                pid=process.pid,
+                status="completed",
+                exit_code=process.returncode
+            )
+            await backend_process_registry.unregister(pid=process.pid)
 
             background_processes[process_id].update({
                 "status": "completed",
@@ -85,12 +111,22 @@ async def run_command(process_id: str, command: str | list[str], timeout: Option
             except asyncio.TimeoutError:
                 process.kill()  # Force kill if terminate doesn't work
 
+            # Update registry
+            await backend_process_registry.update_status(
+                pid=process.pid,
+                status="timeout"
+            )
+            await backend_process_registry.unregister(pid=process.pid)
+
             background_processes[process_id].update({
                 "status": "timeout",
                 "end_time": datetime.now()
             })
 
     except Exception as e:
+        if process_id in background_processes and "pid" in background_processes[process_id]:
+            await backend_process_registry.unregister(pid=background_processes[process_id]["pid"])
+
         background_processes[process_id].update({
             "status": "failed",
             "error": str(e),
@@ -157,6 +193,10 @@ async def terminate_process(process_id: str):
             process.kill()
             await process.wait()
 
+        # Update registry
+        if "pid" in process_info:
+            await backend_process_registry.unregister(pid=process_info["pid"])
+
         process_info.update({
             "status": "terminated",
             "end_time": datetime.now()
@@ -168,4 +208,64 @@ async def terminate_process(process_id: str):
         raise HTTPException(
             status_code=500,
             detail=f"Failed to terminate process: {str(e)}"
+        )
+
+
+@router.post("/process/terminate_by_pid/")
+async def terminate_process_by_pid(pid: int):
+    """Terminate a process by PID using graceful termination (SIGTERM then SIGKILL)"""
+    try:
+        result = await backend_process_registry.terminate_gracefully(
+            pid=pid,
+            reason="Termination via API"
+        )
+
+        if result.get("success"):
+            return {
+                "success": True,
+                "pid": pid,
+                "request_id": result.get("request_id"),
+                "signal": result.get("signal"),
+                "message": result.get("message")
+            }
+        else:
+            raise HTTPException(
+                status_code=404,
+                detail=result.get("error", "Process not found")
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to terminate process: {str(e)}"
+        )
+
+
+@router.get("/processes/list/")
+async def list_all_processes():
+    """List all background processes tracked by the registry"""
+    try:
+        processes = await backend_process_registry.list_all()
+
+        return {
+            "processes": [
+                {
+                    "pid": p.pid,
+                    "request_id": p.request_id,
+                    "command": p.command,
+                    "status": p.status,
+                    "started_at": p.started_at.isoformat(),
+                    "exit_code": p.exit_code,
+                    "terminated_at": p.terminated_at.isoformat() if p.terminated_at else None,
+                    "termination_signal": p.termination_signal
+                }
+                for p in processes
+            ],
+            "count": len(processes)
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to list processes: {str(e)}"
         )
