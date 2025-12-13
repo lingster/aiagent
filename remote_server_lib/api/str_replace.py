@@ -10,7 +10,7 @@ from remote_server_lib.file_operations.file_ops import (
     view_file, create_file, string_replace, 
     insert_at_line, undo_edit
 )
-from remote_server_lib.logging import log_execution_time
+from remote_server_lib.execution_timing import log_execution_time
 
 router = APIRouter(prefix="/api/files", tags=["files"])
 

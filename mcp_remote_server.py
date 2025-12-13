@@ -27,9 +27,11 @@ from pydantic import BaseModel
 from loguru import logger
 import httpx
 
+from remote_server_lib.command_executor import CommandExecutor
+
 # Configure logging
-logger.remove()
-logger.add(sys.stderr, format="{time} {level} {message}", level="INFO")
+#logger.remove()
+#logger.add(sys.stderr, format="{time} {level} {message}", level="INFO")
 
 # Environment configuration
 MCP_API_KEY = os.environ.get("MCP_API_KEY", "")
@@ -37,11 +39,14 @@ MCP_REMOTE_PORT = int(os.environ.get("MCP_REMOTE_PORT", "8888"))
 MCP_PORT = os.environ.get("MCP_PORT", "8181")
 USE_DOCKER = os.environ.get("USE_DOCKER", "True") == "True"
 
-# Backend URLs
+# Initialize the command executor
+executor = CommandExecutor(
+    use_docker=USE_DOCKER,
+    mcp_port=MCP_PORT
+)
+
+# Backend URL for logging
 BACKEND_BASE_URL = f"http://localhost:{MCP_PORT}"
-execute_url = f"{BACKEND_BASE_URL}/api/sync/execute/"
-async_url = f"{BACKEND_BASE_URL}/api/async/execute/background/"
-file_operations_base_url = f"{BACKEND_BASE_URL}/api/files/"
 
 # Session storage (in production, use Redis or similar)
 sessions: Dict[str, Dict[str, Any]] = {}
@@ -81,7 +86,7 @@ app = FastAPI(
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:*", "http://127.0.0.1:*"],
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1)(:\d+)?",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -180,80 +185,190 @@ def delete_session(session_id: str) -> bool:
 
 
 async def execute_mcp_tool(tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
-    """Execute an MCP tool by calling the backend"""
-    from remote_server_lib.core import CommandRequest
+    """Execute an MCP tool using the shared executor and return MCP-formatted response"""
+    logger.info(f"Tool called: {tool_name} with arguments: {arguments}")
 
     if tool_name == "execute_linux_shell_command":
         cmd = arguments.get("cmd", "")
-        req = CommandRequest(command=cmd)
-        httpx_timeout = httpx.Timeout(60)
-        async with httpx.AsyncClient() as client:
-            response = await client.post(execute_url, data=req.model_dump_json(), timeout=httpx_timeout)
-        response.raise_for_status()
-        return response.json()
+        logger.info(f"exec {cmd}")
+
+        # Use the shared executor
+        backend_result = await executor.execute_linux_shell_command(cmd)
+        logger.info(f"Backend response type: {type(backend_result)}, value: {backend_result}")
+
+        # Handle double-encoded JSON
+        if isinstance(backend_result, str):
+            backend_result = json.loads(backend_result)
+            logger.info(f"Parsed string to dict: {backend_result}")
+
+        # Format as MCP tool result with content array
+        output_text = backend_result.get("output", "")
+        error_text = backend_result.get("error", "")
+        return_code = backend_result.get("return_code", 0)
+
+        # Combine output and error if both exist
+        result_text = output_text
+        if error_text:
+            result_text = f"{output_text}\nSTDERR:\n{error_text}" if output_text else error_text
+
+        result_payload = {
+            "content": [
+                {
+                    "type": "text",
+                    "text": result_text if result_text else f"Command completed with return code {return_code}"
+                }
+            ],
+            "isError": return_code != 0 or bool(backend_result.get("error"))
+        }
+        logger.info(f"Tool {tool_name} completed successfully")
+        return result_payload
 
     elif tool_name == "execute_background_linux_shell_command":
         cmd = arguments.get("cmd", "")
-        req = CommandRequest(command=cmd)
-        async with httpx.AsyncClient() as client:
-            response = await client.post(async_url, data=req.model_dump_json())
-            response.raise_for_status()
-            return response.json()
+        logger.info(f"bkg: {cmd}")
+
+        # Use the shared executor
+        backend_result = await executor.execute_background_linux_shell_command(cmd)
+
+        # Handle double-encoded JSON
+        if isinstance(backend_result, str):
+            backend_result = json.loads(backend_result)
+
+        # Format as MCP tool result
+        message = backend_result.get("message", "Command started in background")
+        task_id = backend_result.get("task_id", "")
+        pid = backend_result.get("pid", "")
+        result_text = f"{message}"
+        if task_id:
+            result_text += f"\nTask ID: {task_id}"
+        if pid:
+            result_text += f"\nPID: {pid}"
+
+        result_payload = {
+            "content": [
+                {
+                    "type": "text",
+                    "text": result_text
+                }
+            ],
+            "isError": bool(backend_result.get("error"))
+        }
+        logger.info(f"Tool {tool_name} completed successfully")
+        return result_payload
 
     elif tool_name == "view_file":
         path = arguments.get("path", "")
         view_range = arguments.get("view_range")
-        payload = {
-            "command": "view",
-            "path": path,
-            "view_range": json.dumps(view_range)
+
+        # Use the shared executor
+        backend_result = await executor.view_file(path, view_range)
+
+        # Format as MCP tool result
+        content = backend_result.get("content", "")
+        is_error = not backend_result.get("success", True)
+        result_payload = {
+            "content": [
+                {
+                    "type": "text",
+                    "text": content if content else backend_result.get("error", "")
+                }
+            ],
+            "isError": is_error
         }
-        async with httpx.AsyncClient() as client:
-            response = await client.post(f"{file_operations_base_url}operation/", json=payload)
-            return response.json()
+        logger.info(f"Tool {tool_name} completed successfully")
+        return result_payload
 
     elif tool_name == "create_a_file":
-        payload = {
-            "command": "create",
-            "path": arguments.get("path", ""),
-            "file_text": json.dumps(arguments.get("file_text", "")),
+        path = arguments.get("path", "")
+        file_text = arguments.get("file_text", "")
+
+        # Use the shared executor
+        backend_result = await executor.create_a_file(path, file_text)
+
+        # Format as MCP tool result
+        message = backend_result.get("message", "File created successfully")
+        is_error = not backend_result.get("success", True)
+        result_payload = {
+            "content": [
+                {
+                    "type": "text",
+                    "text": message if not is_error else backend_result.get("error", message)
+                }
+            ],
+            "isError": is_error
         }
-        async with httpx.AsyncClient() as client:
-            response = await client.post(f"{file_operations_base_url}operation/", json=payload)
-            return response.json()
+        logger.info(f"Tool {tool_name} completed successfully")
+        return result_payload
 
     elif tool_name == "string_replace":
-        payload = {
-            "command": "str_replace",
-            "path": arguments.get("path", ""),
-            "old_str": json.dumps(arguments.get("old_str", "")),
-            "new_str": json.dumps(arguments.get("new_str", ""))
+        path = arguments.get("path", "")
+        old_str = arguments.get("old_str", "")
+        new_str = arguments.get("new_str", "")
+
+        # Use the shared executor
+        backend_result = await executor.string_replace(path, old_str, new_str)
+
+        # Format as MCP tool result
+        message = backend_result.get("message", "String replaced successfully")
+        is_error = not backend_result.get("success", True)
+        result_payload = {
+            "content": [
+                {
+                    "type": "text",
+                    "text": message if not is_error else backend_result.get("error", message)
+                }
+            ],
+            "isError": is_error
         }
-        async with httpx.AsyncClient() as client:
-            response = await client.post(f"{file_operations_base_url}operation/", json=payload)
-            return response.json()
+        logger.info(f"Tool {tool_name} completed successfully")
+        return result_payload
 
     elif tool_name == "insert_at":
-        payload = {
-            "command": "insert",
-            "path": arguments.get("path", ""),
-            "insert_line": json.dumps(arguments.get("insert_line", 0)),
-            "new_str": json.dumps(arguments.get("new_str", ""))
+        path = arguments.get("path", "")
+        insert_line = arguments.get("insert_line", 0)
+        new_str = arguments.get("new_str", "")
+
+        # Use the shared executor
+        backend_result = await executor.insert_at(path, insert_line, new_str)
+
+        # Format as MCP tool result
+        message = backend_result.get("message", "Text inserted successfully")
+        is_error = not backend_result.get("success", True)
+        result_payload = {
+            "content": [
+                {
+                    "type": "text",
+                    "text": message if not is_error else backend_result.get("error", message)
+                }
+            ],
+            "isError": is_error
         }
-        async with httpx.AsyncClient() as client:
-            response = await client.post(f"{file_operations_base_url}operation/", json=payload)
-            return response.json()
+        logger.info(f"Tool {tool_name} completed successfully")
+        return result_payload
 
     elif tool_name == "undo_file_edit":
-        payload = {
-            "command": "undo_edit",
-            "path": arguments.get("path", "")
+        path = arguments.get("path", "")
+
+        # Use the shared executor
+        backend_result = await executor.undo_file_edit(path)
+
+        # Format as MCP tool result
+        message = backend_result.get("message", "Edit undone successfully")
+        is_error = not backend_result.get("success", True)
+        result_payload = {
+            "content": [
+                {
+                    "type": "text",
+                    "text": message if not is_error else backend_result.get("error", message)
+                }
+            ],
+            "isError": is_error
         }
-        async with httpx.AsyncClient() as client:
-            response = await client.post(f"{file_operations_base_url}operation/", json=payload)
-            return response.json()
+        logger.info(f"Tool {tool_name} completed successfully")
+        return result_payload
 
     else:
+        logger.error(f"Unknown tool requested: {tool_name}")
         raise ValueError(f"Unknown tool: {tool_name}")
 
 
@@ -262,6 +377,7 @@ async def stream_command_output(cmd: str, request_id: int | str) -> AsyncIterato
     Stream command output as SSE events
     Yields stdout/stderr as they happen, then final result
     """
+    logger.info(f"Starting streaming execution of command: {cmd}")
     try:
         # Start the process
         proc = await asyncio.create_subprocess_shell(
@@ -269,6 +385,7 @@ async def stream_command_output(cmd: str, request_id: int | str) -> AsyncIterato
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
+        logger.info(f"Process started with PID: {proc.pid}")
 
         output_lines = []
         error_lines = []
@@ -293,6 +410,7 @@ async def stream_command_output(cmd: str, request_id: int | str) -> AsyncIterato
 
         # Wait for process to complete
         await proc.wait()
+        logger.info(f"Process {proc.pid} completed with return code: {proc.returncode}")
 
         # Send final result as JSON-RPC response
         result = {
@@ -302,6 +420,7 @@ async def stream_command_output(cmd: str, request_id: int | str) -> AsyncIterato
             "return_code": proc.returncode,
             "pid": proc.pid
         }
+        logger.info(f"Command output: {result}")
 
         jsonrpc_response = {
             "jsonrpc": "2.0",
@@ -309,6 +428,7 @@ async def stream_command_output(cmd: str, request_id: int | str) -> AsyncIterato
             "result": result
         }
 
+        logger.info(f"Sending final SSE event with result")
         yield f"event: message\ndata: {json.dumps(jsonrpc_response)}\n\n"
 
     except Exception as e:
@@ -329,6 +449,7 @@ async def handle_mcp_request(request: JSONRPCRequest, session: Dict[str, Any]) -
 
     method = request.method
     params = request.params or {}
+    logger.info(f"Handling MCP request - method: {method}, params: {params}")
 
     if method == "initialize":
         # Handle initialization
@@ -336,10 +457,11 @@ async def handle_mcp_request(request: JSONRPCRequest, session: Dict[str, Any]) -
         session["client_info"] = params.get("clientInfo", {})
 
         result = {
-            "protocolVersion": "2024-11-05",
+            "protocolVersion": "2025-03-26",
             "capabilities": {
-                "tools": {},
-                "streaming": True
+                "tools": {
+                    "listChanged": False
+                }
             },
             "serverInfo": {
                 "name": "remote-mcp-server",
@@ -440,6 +562,7 @@ async def handle_mcp_request(request: JSONRPCRequest, session: Dict[str, Any]) -
     elif method == "tools/call":
         # This will be handled by SSE streaming
         # Return indicator that streaming is needed
+        logger.info(f"Received tools/call request - will handle via streaming")
         return {"_stream_required": True}
 
     else:
@@ -489,8 +612,10 @@ async def mcp_endpoint(
     # Parse request body
     try:
         body = await request.json()
+        logger.info(f"Received MCP request body: {body}")
         jsonrpc_request = JSONRPCRequest(**body)
     except Exception as e:
+        logger.error(f"Failed to parse JSON-RPC request: {str(e)}")
         raise HTTPException(status_code=400, detail=f"Invalid JSON-RPC request: {str(e)}")
 
     # Handle session
@@ -524,45 +649,33 @@ async def mcp_endpoint(
         # Return SSE stream
         tool_name = jsonrpc_request.params.get("name")
         arguments = jsonrpc_request.params.get("arguments", {})
+        logger.info(f"Processing tool call request: {tool_name} in session {session_id}")
 
-        # For shell commands, use streaming
-        if tool_name == "execute_linux_shell_command":
-            cmd = arguments.get("cmd", "")
-
-            async def event_generator():
-                async for event in stream_command_output(cmd, jsonrpc_request.id):
-                    yield event
-
-            headers = {"Mcp-Session-Id": session_id} if is_initialize else {}
-            return StreamingResponse(
-                event_generator(),
-                media_type="text/event-stream",
-                headers=headers
-            )
-        else:
-            # For other tools, execute and return result
-            try:
-                result = await execute_mcp_tool(tool_name, arguments)
-                response_data = {
-                    "jsonrpc": "2.0",
-                    "id": jsonrpc_request.id,
-                    "result": result
+        # Execute tool and return result (no streaming for now)
+        try:
+            result = await execute_mcp_tool(tool_name, arguments)
+            response_data = {
+                "jsonrpc": "2.0",
+                "id": jsonrpc_request.id,
+                "result": result
+            }
+        except Exception as e:
+            logger.error(f"Tool {tool_name} failed with error: {str(e)}")
+            response_data = {
+                "jsonrpc": "2.0",
+                "id": jsonrpc_request.id,
+                "error": {
+                    "code": -32000,
+                    "message": str(e)
                 }
-            except Exception as e:
-                response_data = {
-                    "jsonrpc": "2.0",
-                    "id": jsonrpc_request.id,
-                    "error": {
-                        "code": -32000,
-                        "message": str(e)
-                    }
-                }
+            }
 
     # Return JSON response
     headers = {}
     if is_initialize:
         headers["Mcp-Session-Id"] = session_id
 
+    logger.info(f"Returning response: {response_data}")
     return JSONResponse(content=response_data, headers=headers)
 
 
@@ -607,7 +720,7 @@ if __name__ == "__main__":
 
     uvicorn.run(
         app,
-        host="0.0.0.0",
+        host="127.0.0.1",
         port=MCP_REMOTE_PORT,
         log_level="info"
     )

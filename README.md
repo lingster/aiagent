@@ -126,6 +126,14 @@ docker compose up -d app
    - URL: `http://localhost:8888/mcp`
    - Authentication: Bearer token with your `MCP_API_KEY`
 
+4a. ** claude code **
+  You can use simple api key or oauth:
+```
+   claude mcp add --transport http aiagent http://localhost:8888/mcp --header "Authorization: Bearer your-secret-key-here"
+   # oauth option
+   claude mcp add --transport http aiagent http://localhost:8888/mcp
+```
+
 5. **Or connect with other MCP clients** (like the example with Linear):
 ```json
 {
