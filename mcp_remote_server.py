@@ -36,6 +36,7 @@ from remote_server_lib.command_executor import CommandExecutor
 # Environment configuration
 MCP_API_KEY = os.environ.get("MCP_API_KEY", "")
 MCP_REMOTE_PORT = int(os.environ.get("MCP_REMOTE_PORT", "8888"))
+MCP_REMOTE_HOST = str(os.environ.get("MCP_REMOTE_HOST", "127.0.0.1"))
 MCP_PORT = os.environ.get("MCP_PORT", "8181")
 USE_DOCKER = os.environ.get("USE_DOCKER", "True") == "True"
 
@@ -720,7 +721,7 @@ if __name__ == "__main__":
 
     uvicorn.run(
         app,
-        host="127.0.0.1",
+        host=MCP_REMOTE_HOST,
         port=MCP_REMOTE_PORT,
         log_level="info"
     )

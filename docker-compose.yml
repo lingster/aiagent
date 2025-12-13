@@ -26,7 +26,7 @@ services:
       - MCP_API_KEY=${MCP_API_KEY}
       - MCP_REMOTE_PORT=${MCP_REMOTE_PORT:-8888}
       - MCP_PORT=${MCP_PORT:-8181}
-      - USE_DOCKER=True
+      - USE_DOCKER=False
     env_file:
       - .env
     command: uv run mcp_remote_server.py
