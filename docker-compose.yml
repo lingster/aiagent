@@ -4,7 +4,7 @@ services:
     build:
       context: .  # Build context is current directory (where Dockerfile is)
     ports:
-      - "${MCP_PORT:-8888}:8000"  # Maps host port 8000 to container port 8000
+      - "${MCP_PORT:-8181}:8000"  # Maps host port 8181 to container port 8000
     environment:
       - TMPDIR=/tmp
     env_file:
@@ -14,4 +14,28 @@ services:
     tty: true  # Keeps container running with interactive terminal
     stdin_open: true  # Enables interactive stdin
     working_dir: /app  # Sets working directory to /app
+
+  # Remote MCP Server (optional - can also run standalone with: uv run mcp_remote_server.py)
+  # Uncomment this service to run the remote MCP server in Docker
+  # mcp-remote:
+  #   image: aiagent
+  #   build:
+  #     context: .
+  #   ports:
+  #     - "${MCP_REMOTE_PORT:-8888}:${MCP_REMOTE_PORT:-8888}"
+  #   environment:
+  #     - MCP_API_KEY=${MCP_API_KEY}
+  #     - MCP_REMOTE_PORT=${MCP_REMOTE_PORT:-8888}
+  #     - MCP_PORT=${MCP_PORT:-8181}
+  #     - USE_DOCKER=True
+  #   env_file:
+  #     - .env
+  #   command: uv run mcp_remote_server.py
+  #   depends_on:
+  #     - app
+  #   volumes:
+  #     - ${DATA_PATH:-./data}:/data:ro  # Read-only access to data
+  #   tty: true
+  #   stdin_open: true
+  #   working_dir: /app
 

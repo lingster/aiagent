@@ -61,19 +61,126 @@ ARG USER_UID=502
 ARG USER_GID=20
 ```
 
-## Claude config changes
+## MCP Server Options
+
+This project now supports **two ways** to use the MCP server:
+
+### Option 1: Local/stdio Mode (Original)
+Claude Desktop connects directly to the MCP server via stdio transport.
+
+**Claude config (`claude_desktop_config.json`):**
 ```json
 {
-    "shelltools": {  
-      "command": "uv",                           
-      "args": [                           
-        "--directory",                           
-        "<PATH_TO>//aiagent/",                           
-        "run",                           
-        "mcp_server.py"                           
-      ]                           
+    "shelltools": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "<PATH_TO>//aiagent/",
+        "run",
+        "mcp_server.py"
+      ]
     }
 }
+```
+
+### Option 2: Remote MCP Server (NEW!)
+Connect to the MCP server over HTTP using the Streamable HTTP transport with Server-Sent Events (SSE).
+
+**✨ Features:**
+- 🌐 **Remote access** - Connect from anywhere over HTTP/HTTPS
+- 🔐 **API key authentication** - Secure your server
+- 📊 **SSE streaming** - Real-time output from long-running commands
+- 🔄 **Session management** - Stateful connections
+- 🚀 **Multiple clients** - Multiple AI agents can connect simultaneously
+
+#### Remote MCP Setup
+
+1. **Configure environment variables** (see `.env.example`):
+```bash
+MCP_REMOTE_PORT=8888        # Port for remote MCP server
+MCP_API_KEY=your-secret-key # Generate with: openssl rand -base64 32
+MCP_PORT=8181               # Backend API port
+```
+
+2. **Start the backend** (if using Docker):
+```bash
+docker compose up -d app
+```
+
+3. **Start the remote MCP server**:
+
+   **Option A - Standalone (recommended for development):**
+   ```bash
+   uv run mcp_remote_server.py
+   ```
+
+   **Option B - In Docker (for production):**
+   Uncomment the `mcp-remote` service in `docker-compose.yml`, then:
+   ```bash
+   docker compose up -d mcp-remote
+   ```
+
+4. **Connect with Claude Desktop using Custom Connectors**:
+
+   In Claude Desktop settings → Connectors → Add custom connector:
+   - URL: `http://localhost:8888/mcp`
+   - Authentication: Bearer token with your `MCP_API_KEY`
+
+5. **Or connect with other MCP clients** (like the example with Linear):
+```json
+{
+  "mcpServers": {
+    "shelltools": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "http://localhost:8888/mcp"],
+      "env": {
+        "MCP_API_KEY": "your-secret-key"
+      }
+    }
+  }
+}
+```
+
+#### Remote MCP API Endpoints
+
+- `POST /mcp` - Main endpoint for JSON-RPC requests (returns JSON or SSE stream)
+- `GET /mcp` - Server-initiated SSE stream (currently returns 405)
+- `DELETE /mcp` - Terminate session
+- `GET /health` - Health check endpoint
+
+#### Security Features
+
+- **API Key Authentication** - All requests require valid Bearer token
+- **Origin Validation** - Prevents DNS rebinding attacks
+- **Session Management** - Secure session IDs with timeout
+- **Localhost Binding** - Server binds to 127.0.0.1 by default
+
+#### Streaming Command Output
+
+The remote MCP server streams output from long-running commands in real-time using Server-Sent Events:
+
+```bash
+# Client sends request to execute command
+POST /mcp
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "execute_linux_shell_command",
+    "arguments": {"cmd": "npm run build"}
+  }
+}
+
+# Server responds with SSE stream:
+event: stdout
+data: {"content": "Building..."}
+
+event: stdout
+data: {"content": "✓ Build complete"}
+
+event: message
+data: {"jsonrpc": "2.0", "id": 1, "result": {...}}
 ```
 
 ## How does this work? The details
